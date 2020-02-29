@@ -1,0 +1,2 @@
+org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
+com.github.hetianyi.spring.cloud.consul.patch.PatchAutoConfiguration
