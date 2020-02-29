@@ -10,7 +10,7 @@
 
     <groupId>com.github.hetianyi</groupId>
     <artifactId>spring-cloud-starter-consul-discovery-patch</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1-SNAPSHOT</version>
 
     <packaging>jar</packaging>
     <name>Spring Cloud Consul Discovery Patch</name>
@@ -168,8 +168,4 @@
             <url>https://oss.sonatype.org/service/local/staging/deploy/maven2</url>
         </repository>
     </distributionManagement>
-
-  <scm>
-    <tag>spring-cloud-starter-consul-discovery-patch-1.0.0</tag>
-  </scm>
 </project>
