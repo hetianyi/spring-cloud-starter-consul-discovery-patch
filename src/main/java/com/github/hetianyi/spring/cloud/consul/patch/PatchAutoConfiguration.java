@@ -8,6 +8,7 @@ import org.springframework.cloud.client.ConditionalOnDiscoveryEnabled;
 import org.springframework.cloud.consul.ConditionalOnConsulEnabled;
 import org.springframework.cloud.consul.discovery.ConsulDiscoveryProperties;
 import org.springframework.cloud.consul.discovery.HeartbeatProperties;
+import org.springframework.cloud.consul.discovery.ReregistrationPredicate;
 import org.springframework.cloud.consul.discovery.TtlScheduler;
 import org.springframework.cloud.consul.serviceregistry.ConsulAutoRegistration;
 import org.springframework.cloud.consul.serviceregistry.ConsulServiceRegistryAutoConfiguration;
@@ -26,9 +27,16 @@ public class PatchAutoConfiguration {
 	@Primary
 	public TtlScheduler patchTtlScheduler(
 			HeartbeatProperties heartbeatProperties,
-			ConsulClient consulClient,
-			ConsulAutoRegistration consulAutoRegistration,
-			ConsulDiscoveryProperties properties) {
-		return new PatchTtlScheduler(heartbeatProperties, consulClient, consulAutoRegistration, properties);
+			ConsulDiscoveryProperties discoveryProperties,
+			ConsulClient client,
+			ReregistrationPredicate alwaysReregistrationPredicate
+	) {
+		return new PatchTtlScheduler(heartbeatProperties, discoveryProperties, client, alwaysReregistrationPredicate);
+	}
+
+	@Bean
+	@Primary
+	public AlwaysReregistrationPredicate alwaysReregistrationPredicate() {
+		return new AlwaysReregistrationPredicate();
 	}
 }

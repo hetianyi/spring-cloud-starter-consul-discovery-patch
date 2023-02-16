@@ -1,3 +1,19 @@
+/*
+ * Copyright 2013-2019 the original author or authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.github.hetianyi.spring.cloud.consul.patch;
 
 import java.time.Duration;
@@ -7,120 +23,144 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledFuture;
 
 import com.ecwid.consul.v1.ConsulClient;
+import com.ecwid.consul.v1.OperationException;
 import com.ecwid.consul.v1.agent.model.NewService;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
+import org.springframework.cloud.consul.discovery.ConsulDiscoveryClient;
 import org.springframework.cloud.consul.discovery.ConsulDiscoveryProperties;
 import org.springframework.cloud.consul.discovery.HeartbeatProperties;
+import org.springframework.cloud.consul.discovery.ReregistrationPredicate;
 import org.springframework.cloud.consul.discovery.TtlScheduler;
-import org.springframework.cloud.consul.serviceregistry.ConsulAutoRegistration;
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.scheduling.concurrent.ConcurrentTaskScheduler;
-
 
 /**
  * spring cloud consul patch scheduler
  *
  * @author Jason He
- * @version 1.0.0
- * @since 1.0.0
- * @date 2020-02-29
  */
 public class PatchTtlScheduler extends TtlScheduler {
 
-	private static final Log log = LogFactory.getLog(PatchTtlScheduler.class);
+    private static final Log log = LogFactory.getLog(ConsulDiscoveryClient.class);
 
-	private final Map<String, ScheduledFuture> serviceHeartbeats = new ConcurrentHashMap<>();
+    private final Map<String, ScheduledFuture> serviceHeartbeats = new ConcurrentHashMap<>();
 
-	private final TaskScheduler scheduler = new ConcurrentTaskScheduler(
-			Executors.newSingleThreadScheduledExecutor());
+    private final TaskScheduler scheduler = new ConcurrentTaskScheduler(Executors.newSingleThreadScheduledExecutor());
 
-	private HeartbeatProperties configuration;
-	private ConsulClient client;
-	private ConsulAutoRegistration reg;
-	private ConsulDiscoveryProperties properties;
+    private final HeartbeatProperties heartbeatProperties;
 
-	public PatchTtlScheduler(HeartbeatProperties configuration, ConsulClient client,
-			ConsulAutoRegistration reg, ConsulDiscoveryProperties properties) {
-		super(configuration, client);
-		this.configuration = configuration;
-		this.reg = reg;
-		this.client = client;
-		this.properties = properties;
-	}
+    private final ConsulDiscoveryProperties discoveryProperties;
 
-	@Deprecated
-	public void add(final NewService service) {
-		add(service.getId());
-	}
+    private final ConsulClient client;
 
-	/**
-	 * Add a service to the checks loop.
-	 * @param instanceId instance id
-	 */
-	public void add(String instanceId) {
-		ScheduledFuture task = this.scheduler.scheduleAtFixedRate(
-				new PatchTtlScheduler.ConsulHeartbeatTask(instanceId),
-				computeHearbeatInterval(configuration.getTtlValue(), configuration.getIntervalRatio()));
-		ScheduledFuture previousTask = this.serviceHeartbeats.put(instanceId, task);
-		if (previousTask != null) {
-			previousTask.cancel(true);
-		}
-	}
+    private final ReregistrationPredicate reregistrationPredicate;
 
-	public void remove(String instanceId) {
-		ScheduledFuture task = this.serviceHeartbeats.get(instanceId);
-		if (task != null) {
-			task.cancel(true);
-		}
-		this.serviceHeartbeats.remove(instanceId);
-	}
+    private final Map<String, NewService> registeredServices = new ConcurrentHashMap<>();
 
-	private class ConsulHeartbeatTask implements Runnable {
+    public PatchTtlScheduler(
+            HeartbeatProperties heartbeatProperties,
+            ConsulDiscoveryProperties discoveryProperties,
+            ConsulClient client,
+            ReregistrationPredicate reregistrationPredicate
+    ) {
+        super(heartbeatProperties, discoveryProperties, client, reregistrationPredicate);
+        this.heartbeatProperties = heartbeatProperties;
+        this.discoveryProperties = discoveryProperties;
+        this.client = client;
+        this.reregistrationPredicate = reregistrationPredicate;
+    }
 
-		private String checkId;
+    public void add(final NewService service) {
+        add(service.getId());
+        this.registeredServices.put(service.getId(), service);
+    }
 
-		ConsulHeartbeatTask(String serviceId) {
-			this.checkId = serviceId;
-			if (!this.checkId.startsWith("service:")) {
-				this.checkId = "service:" + this.checkId;
-			}
-		}
+    /**
+     * Add a service to the checks loop.
+     *
+     * @param instanceId instance id
+     */
+    public void add(String instanceId) {
+        ScheduledFuture task = this.scheduler.scheduleAtFixedRate(new ConsulHeartbeatTask(instanceId, this),
+                computeHeartbeatInterval().toMillis());
+        ScheduledFuture previousTask = this.serviceHeartbeats.put(instanceId, task);
+        if (previousTask != null) {
+            previousTask.cancel(true);
+        }
+    }
 
-		@Override
-		public void run() {
-			try {
-				PatchTtlScheduler.this.client.agentCheckPass(this.checkId);
-			}
-			catch (Exception e) {
-				// try to re-register service, this may fail again.
-				try {
-					PatchTtlScheduler.this.client.agentServiceRegister(reg.getService(),
-							PatchTtlScheduler.this.properties.getAclToken());
-					if (log.isDebugEnabled()) {
-						log.debug("Agent check failed for " + this.checkId
-								+ ", re-registered");
-					}
-				}
-				finally {
-					throw e;
-				}
-			}
-			if (log.isDebugEnabled()) {
-				log.debug("Sending consul heartbeat for: " + this.checkId);
-			}
-		}
+    public void remove(String instanceId) {
+        ScheduledFuture task = this.serviceHeartbeats.get(instanceId);
+        if (task != null) {
+            task.cancel(true);
+        }
+        this.serviceHeartbeats.remove(instanceId);
+        this.registeredServices.remove(instanceId);
+    }
 
-	}
+    static class ConsulHeartbeatTask implements Runnable {
 
-	protected Duration computeHearbeatInterval(long ttlValue, double intervalRatio) {
-		double interval = (double) ttlValue * intervalRatio;
-		double max = Math.max(interval, 1.0D);
-		long ttlMinus1 = ttlValue - 1;
-		double min = Math.min((double) ttlMinus1, max);
-		Duration heartbeatInterval = Duration.ofMillis(Math.round(1000 * min));
-		log.debug("Computed heartbeatInterval: " + heartbeatInterval);
-		return heartbeatInterval;
-	}
+        private final String serviceId;
+
+        private final String checkId;
+
+        private final PatchTtlScheduler ttlScheduler;
+
+        ConsulHeartbeatTask(String serviceId, PatchTtlScheduler ttlScheduler) {
+            this.serviceId = serviceId;
+            if (!this.serviceId.startsWith("service:")) {
+                this.checkId = "service:" + this.serviceId;
+            } else {
+                this.checkId = this.serviceId;
+            }
+            this.ttlScheduler = ttlScheduler;
+        }
+
+        @Override
+        public void run() {
+            try {
+                this.ttlScheduler.client.agentCheckPass(
+                        this.checkId,
+                        null,
+                        this.ttlScheduler.discoveryProperties.getAclToken()
+                );
+                if (log.isDebugEnabled()) {
+                    log.debug("Sending consul heartbeat for: " + this.checkId);
+                }
+            } catch (OperationException e) {
+                if (this.ttlScheduler.heartbeatProperties.isReregisterServiceOnFailure()
+                        && this.ttlScheduler.reregistrationPredicate.isEligible(e)) {
+                    log.warn(e.getMessage());
+                    NewService registeredService = this.ttlScheduler.registeredServices.get(this.serviceId);
+                    if (registeredService != null) {
+                        if (log.isInfoEnabled()) {
+                            log.info("Re-register " + registeredService);
+                        }
+                        this.ttlScheduler.client.agentServiceRegister(registeredService,
+                                this.ttlScheduler.discoveryProperties.getAclToken());
+                    } else {
+                        log.warn("The service to re-register is not found.");
+                    }
+                } else {
+                    throw e;
+                }
+            }
+        }
+
+    }
+
+
+    protected Duration computeHeartbeatInterval() {
+        // heartbeat rate at ratio * ttl, but no later than ttl -1s and, (under lesser
+        // priority), no sooner than 1s from now
+        double interval = this.heartbeatProperties.getTtl().getSeconds() * this.heartbeatProperties.getIntervalRatio();
+        double max = Math.max(interval, 1);
+        long ttlMinus1 = this.heartbeatProperties.getTtl().getSeconds() - 1;
+        double min = Math.min(ttlMinus1, max);
+        Duration heartbeatInterval = Duration.ofMillis(Math.round(1000 * min));
+        log.debug("Computed heartbeatInterval: " + heartbeatInterval);
+        return heartbeatInterval;
+    }
 }
